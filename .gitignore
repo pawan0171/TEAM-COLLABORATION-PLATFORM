@@ -1,0 +1,41 @@
+# Dependency directories
+node_modules/
+**/node_modules/
+
+# Local env files
+.env
+**/.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Production builds
+dist/
+**/dist/
+build/
+**/build/
+
+# IDE files
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Log files
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.system_generated/
+**/logs/
+
+# Backend uploads
+backend/uploads/*
+!backend/uploads/.gitkeep
