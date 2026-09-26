@@ -1,4 +1,6 @@
 const Project = require('../models/Project');
+const User = require('../models/User');
+const Notification = require('../models/Notification');
 const fs = require('fs');
 const path = require('path');
 const { cloudinary, isCloudinaryConfigured } = require('../config/cloudinary');
@@ -11,6 +13,111 @@ const getPopulatedProjectById = async (id) => {
     .populate('tasks.assignedUser', 'name email role')
     .populate('tasks.comments.user', 'name email role')
     .populate('tasks.attachments.uploadedBy', 'name email role');
+};
+
+// Team members must never receive tasks assigned to somebody else. Keep this
+// check on the server so hiding cards in the UI cannot be bypassed with an API call.
+const projectForUser = (project, user) => {
+  if (!project) return null;
+  const projectData = project.toObject ? project.toObject() : JSON.parse(JSON.stringify(project));
+
+  if (user.role !== 'Team Member') return projectData;
+
+  const currentUserId = (user._id || user.id)?.toString();
+  return {
+    ...projectData,
+    tasks: (projectData.tasks || []).filter((task) => {
+      const assigneeId = (task.assignedUser?._id || task.assignedUser)?.toString();
+      return assigneeId && assigneeId === currentUserId;
+    }),
+  };
+};
+
+// Send and persist notification in DB and emit via Socket.io
+const sendNotification = async (req, recipientId, notifData) => {
+  try {
+    const targetRecipient = recipientId?.toString();
+    if (!targetRecipient) return null;
+
+    const notification = await Notification.create({
+      recipient: targetRecipient,
+      sender: req.user?._id || req.user?.id,
+      type: notifData.type || 'general',
+      title: notifData.title,
+      message: notifData.message,
+      projectId: notifData.projectId,
+      taskId: notifData.taskId,
+    });
+
+    if (req.io) {
+      req.io.to(targetRecipient).emit('notification', {
+        _id: notification._id,
+        type: notification.type,
+        title: notification.title,
+        message: notification.message,
+        projectId: notification.projectId,
+        taskId: notification.taskId,
+        isRead: false,
+        createdAt: notification.createdAt,
+      });
+    }
+
+    return notification;
+  } catch (err) {
+    console.error('Error creating/emitting notification:', err.message);
+    return null;
+  }
+};
+
+// Send each recipient the version of the project they are allowed to see.
+// Project rooms are intentionally not used here because they contain members
+// with different task visibility permissions.
+const emitProjectUpdate = async (req, project) => {
+  const recipients = new Map();
+  const managerId = (project.manager?._id || project.manager)?.toString();
+  if (managerId) recipients.set(managerId, 'Project Manager');
+
+  (project.members || []).forEach((member) => {
+    const memberId = (member._id || member)?.toString();
+    if (memberId) recipients.set(memberId, member.role || 'Team Member');
+  });
+
+  const admins = await User.find({ role: 'Admin' }).select('_id role');
+  admins.forEach((admin) => recipients.set(admin._id.toString(), admin.role));
+
+  recipients.forEach((role, recipientId) => {
+    req.io.to(recipientId).emit('projectUpdated', projectForUser(project, { id: recipientId, role }));
+  });
+};
+
+const notifyTaskEdit = async (req, project, task) => {
+  const recipientIds = new Set();
+  const managerId = (project.manager?._id || project.manager)?.toString();
+  if (managerId) recipientIds.add(managerId);
+
+  const admins = await User.find({ role: 'Admin' }).select('_id');
+  admins.forEach((admin) => recipientIds.add(admin._id.toString()));
+
+  const currentUserId = (req.user?._id || req.user?.id)?.toString();
+  if (currentUserId) recipientIds.delete(currentUserId);
+
+  const isCompleted = task.status === 'Completed';
+  const title = isCompleted
+    ? 'Task Completed by Team Member'
+    : 'Task Updated by Team Member';
+  const message = isCompleted
+    ? `${req.user.name} marked task "${task.title}" as completed in project "${project.name}".`
+    : `${req.user.name} updated task "${task.title}" (${task.status}) in project "${project.name}".`;
+
+  for (const recipientId of recipientIds) {
+    await sendNotification(req, recipientId, {
+      type: isCompleted ? 'task-completed' : 'task-update',
+      title,
+      message,
+      projectId: project._id,
+      taskId: task._id,
+    });
+  }
 };
 
 // @desc    Get projects based on role
@@ -40,9 +147,10 @@ const getProjects = async (req, res) => {
     const projects = await Project.find(query)
       .populate('manager', 'name email role')
       .populate('members', 'name email role')
+      .populate('tasks.assignedUser', 'name email role')
       .sort({ createdAt: -1 });
 
-    res.json(projects);
+    res.json(projects.map((project) => projectForUser(project, req.user)));
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -101,7 +209,7 @@ const getProjectById = async (req, res) => {
       return res.status(403).json({ message: 'Not authorized to view this project' });
     }
 
-    res.json(project);
+    res.json(projectForUser(project, req.user));
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -140,7 +248,7 @@ const updateProject = async (req, res) => {
 
     const populatedProject = await getPopulatedProjectById(updatedProject._id);
 
-    req.io.to(populatedProject._id.toString()).emit('projectUpdated', populatedProject);
+    await emitProjectUpdate(req, populatedProject);
 
     res.json(populatedProject);
   } catch (error) {
@@ -202,15 +310,16 @@ const addTask = async (req, res) => {
 
     const updatedProject = await getPopulatedProjectById(project._id);
 
-    req.io.to(updatedProject._id.toString()).emit('projectUpdated', updatedProject);
+    await emitProjectUpdate(req, updatedProject);
 
     if (assignedUser) {
-      req.io.to(assignedUser.toString()).emit('notification', {
+      const createdTask = updatedProject.tasks[updatedProject.tasks.length - 1];
+      await sendNotification(req, assignedUser, {
         type: 'assignment',
         title: 'New Task Assignment',
         message: `You have been assigned to task "${title}" in project "${project.name}".`,
         projectId: project._id,
-        createdAt: new Date(),
+        taskId: createdTask?._id,
       });
     }
 
@@ -234,11 +343,15 @@ const updateTask = async (req, res) => {
       return res.status(404).json({ message: 'Project not found' });
     }
 
+    const currentUserId = (req.user?._id || req.user?.id)?.toString();
     const isManager =
-      req.user.role === 'Admin' || project.manager.toString() === req.user.id;
-    const isMember = project.members.some((m) => m.toString() === req.user.id);
+      req.user.role === 'Admin' ||
+      (project.manager?._id || project.manager)?.toString() === currentUserId;
+    const isMember = (project.members || []).some(
+      (m) => (m._id || m)?.toString() === currentUserId
+    );
 
-    // Admin, manager, or member can update tasks
+    // Admin, manager, or a project member can update tasks.
     if (!isManager && !isMember) {
       return res.status(403).json({ message: 'Not authorized to update tasks in this project' });
     }
@@ -247,6 +360,9 @@ const updateTask = async (req, res) => {
     if (!task) {
       return res.status(404).json({ message: 'Task not found' });
     }
+
+    const existingAssigneeId = (task.assignedUser?._id || task.assignedUser)?.toString();
+    const isAssignedMember = isMember && existingAssigneeId && existingAssigneeId === currentUserId;
 
     if (isManager) {
       // Manager can update everything
@@ -257,38 +373,51 @@ const updateTask = async (req, res) => {
       if (dueDate !== undefined) task.dueDate = dueDate;
       if (assignedUser !== undefined) task.assignedUser = assignedUser || null;
     } else {
-      // Regular members can only update task status (e.g. dragging cards on Kanban board)
-      if (status !== undefined) {
-        task.status = status;
+      if (!isAssignedMember) {
+        return res.status(403).json({ message: 'You can only edit tasks assigned to you' });
       }
+      // Members can update their own work, but cannot reassign to someone else
       if (
-        title !== undefined ||
-        description !== undefined ||
-        priority !== undefined ||
-        dueDate !== undefined ||
-        assignedUser !== undefined
+        assignedUser !== undefined &&
+        assignedUser &&
+        assignedUser.toString() !== existingAssigneeId
       ) {
-        return res.status(403).json({ message: 'Only managers or admins can edit task details' });
+        return res.status(403).json({ message: 'Team members cannot reassign tasks' });
       }
+      if (title !== undefined) task.title = title;
+      if (description !== undefined) task.description = description;
+      if (priority !== undefined) task.priority = priority;
+      if (status !== undefined) task.status = status;
+      if (dueDate !== undefined) task.dueDate = dueDate;
     }
 
     await project.save();
 
     const updatedProject = await getPopulatedProjectById(project._id);
 
-    req.io.to(updatedProject._id.toString()).emit('projectUpdated', updatedProject);
+    await emitProjectUpdate(req, updatedProject);
 
-    if (assignedUser) {
-      req.io.to(assignedUser.toString()).emit('notification', {
+    // If assigned user changed by manager, notify the new assignee
+    if (
+      isManager &&
+      assignedUser &&
+      assignedUser.toString() !== existingAssigneeId
+    ) {
+      await sendNotification(req, assignedUser, {
         type: 'assignment',
         title: 'Task Assignment Update',
         message: `You have been assigned to task "${task.title}" in project "${project.name}".`,
         projectId: project._id,
-        createdAt: new Date(),
+        taskId: task._id,
       });
     }
 
-    res.json(updatedProject);
+    // When edited by a team member, notify manager and admins
+    if (!isManager) {
+      await notifyTaskEdit(req, project, task);
+    }
+
+    res.json(projectForUser(updatedProject, req.user));
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -322,7 +451,7 @@ const deleteTask = async (req, res) => {
 
     const updatedProject = await getPopulatedProjectById(project._id);
 
-    req.io.to(updatedProject._id.toString()).emit('projectUpdated', updatedProject);
+    await emitProjectUpdate(req, updatedProject);
 
     res.json(updatedProject);
   } catch (error) {
@@ -351,7 +480,7 @@ const archiveProject = async (req, res) => {
 
     const populatedProject = await getPopulatedProjectById(updatedProject._id);
 
-    req.io.to(populatedProject._id.toString()).emit('projectUpdated', populatedProject);
+    await emitProjectUpdate(req, populatedProject);
 
     res.json(populatedProject);
   } catch (error) {
@@ -380,7 +509,7 @@ const unarchiveProject = async (req, res) => {
 
     const populatedProject = await getPopulatedProjectById(updatedProject._id);
 
-    req.io.to(populatedProject._id.toString()).emit('projectUpdated', populatedProject);
+    await emitProjectUpdate(req, populatedProject);
 
     res.json(populatedProject);
   } catch (error) {
@@ -418,6 +547,10 @@ const addComment = async (req, res) => {
       return res.status(404).json({ message: 'Task not found' });
     }
 
+    if (!isManager && (!task.assignedUser || task.assignedUser.toString() !== req.user.id)) {
+      return res.status(403).json({ message: 'You can only comment on tasks assigned to you' });
+    }
+
     task.comments.push({
       text,
       user: req.user.id,
@@ -427,22 +560,45 @@ const addComment = async (req, res) => {
 
     const updatedProject = await getPopulatedProjectById(project._id);
 
-    // Notify room of task/project updates
-    req.io.to(project._id.toString()).emit('projectUpdated', updatedProject);
+    await emitProjectUpdate(req, updatedProject);
 
-    // Notify task assignee
+    // Notify task assignee if someone else commented
     const taskObj = updatedProject.tasks.id(taskId);
-    if (taskObj.assignedUser && taskObj.assignedUser._id.toString() !== req.user.id) {
-      req.io.to(taskObj.assignedUser._id.toString()).emit('notification', {
+    const assigneeId = (taskObj.assignedUser?._id || taskObj.assignedUser)?.toString();
+    const currentUserId = (req.user?._id || req.user?.id)?.toString();
+
+    if (assigneeId && assigneeId !== currentUserId) {
+      await sendNotification(req, assigneeId, {
         type: 'comment',
         title: 'New Comment on Task',
-        message: `${req.user.name} commented on "${taskObj.title}": "${text.substring(0, 30)}${text.length > 30 ? '...' : ''}"`,
+        message: `${req.user.name} commented on "${taskObj.title}": "${text.substring(0, 35)}${text.length > 35 ? '...' : ''}"`,
         projectId: project._id,
-        createdAt: new Date(),
+        taskId: taskObj._id,
       });
     }
 
-    res.status(201).json(updatedProject);
+    // If non-manager commented, notify manager and admins
+    if (!isManager) {
+      const recipientIds = new Set();
+      const managerId = (project.manager?._id || project.manager)?.toString();
+      if (managerId) recipientIds.add(managerId);
+
+      const admins = await User.find({ role: 'Admin' }).select('_id');
+      admins.forEach((admin) => recipientIds.add(admin._id.toString()));
+      recipientIds.delete(currentUserId);
+
+      for (const recipientId of recipientIds) {
+        await sendNotification(req, recipientId, {
+          type: 'comment',
+          title: 'Task Comment by Team Member',
+          message: `${req.user.name} commented on task "${taskObj.title}" in "${project.name}": "${text.substring(0, 35)}${text.length > 35 ? '...' : ''}"`,
+          projectId: project._id,
+          taskId: taskObj._id,
+        });
+      }
+    }
+
+    res.status(201).json(projectForUser(updatedProject, req.user));
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -473,6 +629,9 @@ const uploadAttachment = async (req, res) => {
     const isMember = project.members.some((m) => m.toString() === req.user.id);
     if (!isManager && !isMember) {
       return res.status(403).json({ message: 'Not authorized to upload files to this project' });
+    }
+    if (!isManager && (!task.assignedUser || task.assignedUser.toString() !== req.user.id)) {
+      return res.status(403).json({ message: 'You can only upload files to tasks assigned to you' });
     }
 
     let fileUrl = '';
@@ -527,9 +686,29 @@ const uploadAttachment = async (req, res) => {
 
     const updatedProject = await getPopulatedProjectById(project._id);
 
-    req.io.to(updatedProject._id.toString()).emit('projectUpdated', updatedProject);
+    await emitProjectUpdate(req, updatedProject);
 
-    res.status(201).json(updatedProject);
+    if (!isManager) {
+      const recipientIds = new Set();
+      const managerId = (project.manager?._id || project.manager)?.toString();
+      if (managerId) recipientIds.add(managerId);
+
+      const admins = await User.find({ role: 'Admin' }).select('_id');
+      admins.forEach((admin) => recipientIds.add(admin._id.toString()));
+      recipientIds.delete((req.user?._id || req.user?.id)?.toString());
+
+      for (const recipientId of recipientIds) {
+        await sendNotification(req, recipientId, {
+          type: 'attachment',
+          title: 'Attachment Uploaded by Team Member',
+          message: `${req.user.name} uploaded "${originalName}" for task "${task.title}" in "${project.name}".`,
+          projectId: project._id,
+          taskId: task._id,
+        });
+      }
+    }
+
+    res.status(201).json(projectForUser(updatedProject, req.user));
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -559,8 +738,12 @@ const deleteAttachment = async (req, res) => {
 
     const isManager = req.user.role === 'Admin' || project.manager.toString() === req.user.id;
     const isUploader = attachment.uploadedBy.toString() === req.user.id;
+    const isAssignedMember =
+      project.members.some((m) => m.toString() === req.user.id) &&
+      task.assignedUser &&
+      task.assignedUser.toString() === req.user.id;
     
-    if (!isManager && !isUploader) {
+    if (!isManager && (!isAssignedMember || !isUploader)) {
       return res.status(403).json({ message: 'Not authorized to delete this attachment' });
     }
 
@@ -580,9 +763,9 @@ const deleteAttachment = async (req, res) => {
 
     const updatedProject = await getPopulatedProjectById(project._id);
 
-    req.io.to(updatedProject._id.toString()).emit('projectUpdated', updatedProject);
+    await emitProjectUpdate(req, updatedProject);
 
-    res.json(updatedProject);
+    res.json(projectForUser(updatedProject, req.user));
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

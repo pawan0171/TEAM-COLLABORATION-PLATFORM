@@ -81,7 +81,9 @@ const ProjectDetails = () => {
 
       // Listen for task changes/comments/assignments
       socket.on('projectUpdated', (updatedProject) => {
-        setProject(updatedProject);
+        if (updatedProject && updatedProject._id === id) {
+          setProject(updatedProject);
+        }
       });
 
       return () => {
@@ -242,10 +244,19 @@ const ProjectDetails = () => {
   const isManager =
     user.role === 'Admin' ||
     (user.role === 'Project Manager' && (project.manager?._id || project.manager) === (user.id || user._id));
+  const isTeamMember = user.role === 'Team Member';
+  const currentUserId = (user.id || user._id)?.toString();
+
+  // Team members should only see tasks assigned to them
+  const visibleTasks = isTeamMember
+    ? (project.tasks || []).filter(
+        (t) => (t.assignedUser?._id || t.assignedUser)?.toString() === currentUserId
+      )
+    : (project.tasks || []);
 
   // Compute Task Stats
-  const totalTasks = project.tasks?.length || 0;
-  const completedTasks = project.tasks?.filter((t) => t.status === 'Done').length || 0;
+  const totalTasks = visibleTasks.length;
+  const completedTasks = visibleTasks.filter((t) => t.status === 'Completed' || t.status === 'Done').length;
   const progressPercent = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
 
   const columns = [
@@ -262,7 +273,7 @@ const ProjectDetails = () => {
     Completed: [],
   };
 
-  project.tasks?.forEach((task) => {
+  visibleTasks.forEach((task) => {
     let statusKey = task.status || 'Todo';
     if (statusKey === 'To Do') statusKey = 'Todo';
     if (statusKey === 'Done') statusKey = 'Completed';
@@ -292,6 +303,15 @@ const ProjectDetails = () => {
           <AlertCircle className="h-5 w-5 shrink-0 animate-pulse" />
           <span>
             <strong className="font-semibold">Archived Workspace:</strong> This project is currently archived. You can view all information, but tasks and configurations are read-only.
+          </span>
+        </div>
+      )}
+
+      {isTeamMember && (
+        <div className="mb-6 flex items-center gap-3 rounded-xl border border-indigo-500/20 bg-indigo-500/10 p-4 text-xs sm:text-sm text-indigo-300">
+          <UserCheck className="h-5 w-5 text-indigo-400 shrink-0" />
+          <span>
+            <strong className="font-semibold text-white">Your Assigned Tasks View:</strong> You are viewing tasks assigned to you. You can move tasks across columns, edit details of completed work, and upload attachments. The Admin and Project Manager are automatically notified of your updates.
           </span>
         </div>
       )}
@@ -699,7 +719,7 @@ const ProjectDetails = () => {
 
               const productivityData = uniqueUsersList
                 .map((u) => {
-                  const userTasks = project.tasks?.filter((t) => (t.assignedUser?._id || t.assignedUser) === u._id) || [];
+                  const userTasks = project.tasks?.filter((t) => (t.assignedUser?._id || t.assignedUser)?.toString() === (u._id || u)?.toString()) || [];
                   const completed = userTasks.filter((t) => t.status === 'Completed' || t.status === 'Done').length;
                   const pending = userTasks.length - completed;
 

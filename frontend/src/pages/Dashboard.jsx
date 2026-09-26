@@ -286,7 +286,7 @@ const Dashboard = () => {
         {filteredProjects.map((project) => {
           // Progress calculation
           const totalTasks = project.tasks?.length || 0;
-          const completedTasks = project.tasks?.filter((t) => t.status === 'Done').length || 0;
+          const completedTasks = project.tasks?.filter((t) => t.status === 'Completed' || t.status === 'Done').length || 0;
           const progressPercent = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
 
           // Permission check for editing/deleting
@@ -362,7 +362,9 @@ const Dashboard = () => {
                 {totalTasks > 0 ? (
                   <div>
                     <div className="flex justify-between text-xs mb-1.5">
-                      <span className="text-slate-500">Tasks Progress</span>
+                      <span className="text-slate-500">
+                        {user.role === 'Team Member' ? 'Your Tasks Progress' : 'Tasks Progress'}
+                      </span>
                       <span className="font-semibold text-slate-300">
                         {completedTasks}/{totalTasks} ({progressPercent}%)
                       </span>
@@ -376,7 +378,7 @@ const Dashboard = () => {
                   </div>
                 ) : (
                   <div className="flex justify-between text-xs text-slate-500">
-                    <span>No tasks assigned</span>
+                    <span>{user.role === 'Team Member' ? 'No tasks assigned to you' : 'No tasks assigned'}</span>
                     <span>0%</span>
                   </div>
                 )}

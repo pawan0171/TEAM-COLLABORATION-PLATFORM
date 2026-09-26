@@ -4,6 +4,8 @@ const dotenv = require('dotenv');
 const http = require('http');
 const socketio = require('socket.io');
 const path = require('path');
+const jwt = require('jsonwebtoken');
+const User = require('./models/User');
 const connectDB = require('./config/db');
 
 // Load environment variables
@@ -26,19 +28,32 @@ const io = socketio(server, {
 // Store online user status
 const activeUsers = new Map(); // userId -> socketId
 
+// Real-time updates include task data, so a socket must be authenticated before
+// it is allowed to join a personal notification room.
+io.use(async (socket, next) => {
+  try {
+    const token = socket.handshake.auth?.token;
+    if (!token) return next(new Error('Authentication required'));
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.id).select('_id role');
+    if (!user) return next(new Error('User not found'));
+
+    socket.user = user;
+    next();
+  } catch (error) {
+    next(new Error('Invalid authentication token'));
+  }
+});
+
 io.on('connection', (socket) => {
   console.log(`Socket connected: ${socket.id}`);
 
-  // Register user ID and join personal room for notifications
-  socket.on('registerUser', (userId) => {
-    socket.userId = userId;
-    socket.join(userId);
-    activeUsers.set(userId, socket.id);
-    console.log(`User registered: ${userId} with socket: ${socket.id}`);
-    
-    // Broadcast updated online users list
-    io.emit('onlineUsers', Array.from(activeUsers.keys()));
-  });
+  // Personal rooms are assigned from the verified token, never from a client event.
+  socket.userId = socket.user._id.toString();
+  socket.join(socket.userId);
+  activeUsers.set(socket.userId, socket.id);
+  io.emit('onlineUsers', Array.from(activeUsers.keys()));
 
   // Project room actions
   socket.on('joinProject', (projectId) => {
@@ -76,6 +91,7 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/projects', require('./routes/projectRoutes'));
 app.use('/api/users', require('./routes/userRoutes'));
+app.use('/api/notifications', require('./routes/notificationRoutes'));
 
 // Basic health check
 app.get('/', (req, res) => {

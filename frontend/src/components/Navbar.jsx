@@ -1,10 +1,23 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { KanbanSquare, LogOut, ShieldAlert, User as UserIcon, Bell, X, Info } from 'lucide-react';
+import {
+  KanbanSquare,
+  LogOut,
+  ShieldAlert,
+  User as UserIcon,
+  Bell,
+  X,
+  Info,
+  CheckCircle2,
+  AlertCircle,
+  MessageSquare,
+  Paperclip,
+  CheckCheck,
+} from 'lucide-react';
 
 const Navbar = () => {
-  const { user, logout, notifications, clearNotifications } = useAuth();
+  const { user, logout, notifications, clearNotifications, markNotificationAsRead } = useAuth();
   const navigate = useNavigate();
   const [showNotifications, setShowNotifications] = useState(false);
 
@@ -25,6 +38,34 @@ const Navbar = () => {
         return 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30';
     }
   };
+
+  const getNotificationIcon = (type) => {
+    switch (type) {
+      case 'task-completed':
+        return <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0 mt-0.5" />;
+      case 'comment':
+        return <MessageSquare className="h-4 w-4 text-sky-400 shrink-0 mt-0.5" />;
+      case 'attachment':
+        return <Paperclip className="h-4 w-4 text-purple-400 shrink-0 mt-0.5" />;
+      case 'task-update':
+        return <AlertCircle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />;
+      default:
+        return <Info className="h-4 w-4 text-indigo-400 shrink-0 mt-0.5" />;
+    }
+  };
+
+  const handleNotificationClick = (notif) => {
+    if (notif._id && markNotificationAsRead) {
+      markNotificationAsRead(notif._id);
+    }
+    const targetProjectId = notif.projectId?._id || notif.projectId;
+    if (targetProjectId) {
+      setShowNotifications(false);
+      navigate(`/projects/${targetProjectId}`);
+    }
+  };
+
+  const unreadCount = notifications.filter((n) => !n.isRead).length;
 
   return (
     <nav className="sticky top-0 z-50 border-b border-slate-800 bg-slate-950/70 backdrop-blur-md">
@@ -69,18 +110,24 @@ const Navbar = () => {
               >
                 <Bell className="h-5 w-5" />
                 {notifications.length > 0 && (
-                  <span className="absolute top-1.5 right-1.5 flex h-2 w-2">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
-                    <span className="relative inline-flex rounded-full h-2 w-2 bg-rose-500"></span>
+                  <span className="absolute -top-0.5 -right-0.5 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-rose-500 px-1 text-[9px] font-bold text-white shadow-sm ring-2 ring-slate-950">
+                    {unreadCount > 0 ? unreadCount : notifications.length}
                   </span>
                 )}
               </button>
 
               {/* Notifications Dropdown Panel */}
               {showNotifications && (
-                <div className="absolute right-0 mt-3 w-80 rounded-xl border border-slate-800 bg-slate-950 p-4 shadow-2xl ring-1 ring-black/5 animate-in fade-in duration-200">
+                <div className="absolute right-0 mt-3 w-88 rounded-xl border border-slate-800 bg-slate-950 p-4 shadow-2xl ring-1 ring-black/5 animate-in fade-in duration-200 z-50">
                   <div className="flex items-center justify-between border-b border-slate-900 pb-2 mb-3">
-                    <span className="text-xs font-bold text-white uppercase tracking-wider">Inbox Notifications</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-white uppercase tracking-wider">Notifications</span>
+                      {notifications.length > 0 && (
+                        <span className="rounded-full bg-slate-900 px-2 py-0.5 text-[10px] font-semibold text-slate-400 border border-slate-800">
+                          {notifications.length}
+                        </span>
+                      )}
+                    </div>
                     {notifications.length > 0 && (
                       <button
                         onClick={() => {
@@ -94,18 +141,35 @@ const Navbar = () => {
                     )}
                   </div>
 
-                  <div className="max-h-60 overflow-y-auto space-y-2.5">
+                  <div className="max-h-72 overflow-y-auto space-y-2 pr-1">
                     {notifications.map((notif, idx) => (
                       <div
-                        key={idx}
-                        className="rounded-lg border border-slate-900 bg-slate-900/40 p-2.5 hover:border-slate-800 transition-all flex items-start gap-2"
+                        key={notif._id || idx}
+                        onClick={() => handleNotificationClick(notif)}
+                        className={`rounded-lg border p-2.5 transition-all flex items-start gap-2.5 cursor-pointer hover:border-indigo-500/40 hover:bg-slate-900/60 ${
+                          notif.isRead
+                            ? 'border-slate-900 bg-slate-950/40 opacity-70'
+                            : 'border-slate-800 bg-slate-900/50'
+                        }`}
                       >
-                        <Info className="h-4.5 w-4.5 text-indigo-400 shrink-0 mt-0.5" />
-                        <div>
-                          <p className="text-xs font-bold text-slate-200 leading-tight">{notif.title}</p>
-                          <p className="text-[11px] text-slate-400 mt-1 leading-normal">{notif.message}</p>
-                          <p className="text-[9px] text-slate-600 mt-1">
-                            {new Date(notif.createdAt).toLocaleTimeString(undefined, {hour: '2-digit', minute:'2-digit'})}
+                        {getNotificationIcon(notif.type)}
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-bold text-slate-200 leading-tight flex items-center justify-between">
+                            <span>{notif.title}</span>
+                            {!notif.isRead && (
+                              <span className="h-1.5 w-1.5 rounded-full bg-indigo-500 shrink-0"></span>
+                            )}
+                          </p>
+                          <p className="text-[11px] text-slate-400 mt-1 leading-normal break-words">
+                            {notif.message}
+                          </p>
+                          <p className="text-[9px] text-slate-500 mt-1">
+                            {new Date(notif.createdAt).toLocaleTimeString(undefined, {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                              month: 'short',
+                              day: 'numeric',
+                            })}
                           </p>
                         </div>
                       </div>

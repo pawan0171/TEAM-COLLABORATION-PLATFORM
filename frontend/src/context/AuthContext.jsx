@@ -32,24 +32,34 @@ export const AuthProvider = ({ children }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
+  const fetchNotifications = async () => {
+    try {
+      const response = await api.get('/notifications');
+      setNotifications(response.data);
+    } catch (err) {
+      console.error('Failed to fetch notifications:', err);
+    }
+  };
+
   // Real-time Socket lifecycle management
   useEffect(() => {
     let socketInstance;
 
     if (user) {
-      // Connect to the backend Socket server
-      socketInstance = io('http://localhost:5000');
-      setSocket(socketInstance);
+      fetchNotifications();
 
-      // Register the active user
-      socketInstance.emit('registerUser', user._id || user.id);
+      // Connect to the backend Socket server
+      socketInstance = io('http://localhost:5000', {
+        auth: { token },
+      });
+      setSocket(socketInstance);
 
       // Listener for online user status updates
       socketInstance.on('onlineUsers', (usersList) => {
         setOnlineUsers(usersList);
       });
 
-      // Listener for incoming assignment/comment notifications
+      // Listener for incoming assignment/comment/task-update notifications
       socketInstance.on('notification', (notif) => {
         setNotifications((prev) => [notif, ...prev]);
       });
@@ -64,7 +74,7 @@ export const AuthProvider = ({ children }) => {
         socketInstance.disconnect();
       }
     };
-  }, [user]);
+  }, [user, token]);
 
   const login = async (email, password) => {
     try {
@@ -96,10 +106,28 @@ export const AuthProvider = ({ children }) => {
     localStorage.removeItem('token');
     setToken(null);
     setUser(null);
+    setNotifications([]);
   };
 
-  const clearNotifications = () => {
-    setNotifications([]);
+  const clearNotifications = async () => {
+    try {
+      await api.delete('/notifications');
+      setNotifications([]);
+    } catch (err) {
+      console.error('Failed to clear notifications in DB:', err);
+      setNotifications([]);
+    }
+  };
+
+  const markNotificationAsRead = async (notificationId) => {
+    try {
+      await api.put(`/notifications/${notificationId}/read`);
+      setNotifications((prev) =>
+        prev.map((n) => (n._id === notificationId ? { ...n, isRead: true } : n))
+      );
+    } catch (err) {
+      console.error('Failed to mark notification as read:', err);
+    }
   };
 
   return (
@@ -114,7 +142,9 @@ export const AuthProvider = ({ children }) => {
         socket,
         onlineUsers,
         notifications,
+        fetchNotifications,
         clearNotifications,
+        markNotificationAsRead,
       }}
     >
       {children}

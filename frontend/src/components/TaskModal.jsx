@@ -29,6 +29,7 @@ const TaskModal = ({
   task = null,
 }) => {
   const { user } = useAuth();
+  const isTeamMember = user.role === 'Team Member';
 
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -89,9 +90,14 @@ const TaskModal = ({
       description,
       priority,
       status,
-      assignedUser: assignedUser || null,
       dueDate: dueDate || null,
     };
+
+    // Ownership is managed by an admin or project manager. A team member can
+    // edit every work-detail field on their own task, but cannot reassign it.
+    if (!isTeamMember) {
+      payload.assignedUser = assignedUser || null;
+    }
 
     try {
       let response;
@@ -282,6 +288,15 @@ const TaskModal = ({
           </div>
         )}
 
+        {isTeamMember && task && (
+          <div className="mt-3 flex items-center gap-2 rounded-lg border border-indigo-500/20 bg-indigo-500/10 px-3.5 py-2.5 text-xs text-indigo-300">
+            <CheckSquare className="h-4 w-4 text-indigo-400 shrink-0" />
+            <span>
+              You are editing your assigned task. Any status changes or updates you save will automatically notify the Project Manager and Admin.
+            </span>
+          </div>
+        )}
+
         {/* Split Grid for Task Form and Comments/Attachments (Only when task exists) */}
         <div className={task ? 'grid grid-cols-1 md:grid-cols-5 gap-6 mt-4' : 'mt-4'}>
           {/* Form Panel */}
@@ -329,7 +344,6 @@ const TaskModal = ({
                   <option value="High">🔴 High</option>
                 </select>
               </div>
-
               <div>
                 <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider">
                   Status
@@ -346,24 +360,39 @@ const TaskModal = ({
                 </select>
               </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                  <User className="h-4 w-4 text-slate-500" />
-                  Assignee
-                </label>
-                <select
-                  value={assignedUser}
-                  onChange={(e) => setAssignedUser(e.target.value)}
-                  className="mt-2 block w-full rounded-lg border border-slate-800 bg-slate-900/50 py-2.5 px-3 text-sm text-white focus:border-indigo-505 focus:outline-none cursor-pointer"
-                >
-                  <option value="">Select Assignee</option>
-                  {projectMembers?.map((m) => (
-                    <option key={m._id} value={m._id}>
-                      {m.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {!isTeamMember ? (
+                <div>
+                  <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                    <User className="h-4 w-4 text-slate-500" />
+                    Assignee
+                  </label>
+                  <select
+                    value={assignedUser}
+                    onChange={(e) => setAssignedUser(e.target.value)}
+                    className="mt-2 block w-full rounded-lg border border-slate-800 bg-slate-900/50 py-2.5 px-3 text-sm text-white focus:border-indigo-505 focus:outline-none cursor-pointer"
+                  >
+                    <option value="">Select Assignee</option>
+                    {projectMembers?.map((m) => (
+                      <option key={m._id} value={m._id}>
+                        {m.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : (
+                <div>
+                  <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                    <User className="h-4 w-4 text-slate-500" />
+                    Assignee
+                  </label>
+                  <div className="mt-2 flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-900/40 py-2 px-3 text-xs text-slate-300">
+                    <div className="flex h-5 w-5 items-center justify-center rounded-full bg-indigo-500/20 text-indigo-400 font-bold text-[10px]">
+                      {user.name.charAt(0).toUpperCase()}
+                    </div>
+                    <span className="truncate">{user.name} (Assigned to you)</span>
+                  </div>
+                </div>
+              )}
 
               <div>
                 <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
@@ -382,7 +411,7 @@ const TaskModal = ({
             {/* Form Actions */}
             <div className="flex items-center justify-between border-t border-slate-800 pt-4 mt-6">
               <div>
-                {task && (
+                {task && !isTeamMember && (
                   <button
                     type="button"
                     onClick={handleDelete}
@@ -410,7 +439,11 @@ const TaskModal = ({
                   {loading ? (
                     <div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent"></div>
                   ) : task ? (
-                    'Save Task'
+                    isTeamMember
+                      ? status === 'Completed'
+                        ? 'Submit Completed Task'
+                        : 'Save & Notify Manager'
+                      : 'Save Task'
                   ) : (
                     'Add Task'
                   )}
