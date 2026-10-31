@@ -1,0 +1,94 @@
+services:
+  mongodb:
+    image: mongo:7.0
+    container_name: collabhub-mongodb
+    restart: unless-stopped
+    ports:
+      - '27017:27017'
+    volumes:
+      - mongo_data:/data/db
+    environment:
+      - MONGO_INITDB_DATABASE=team_collaboration
+    healthcheck:
+      test: ['CMD', 'mongosh', '--eval', 'db.runCommand("ping").ok', 'localhost:27017/test', '--quiet']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - collabhub-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: collabhub-redis
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - collabhub-network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: collabhub-backend
+    restart: unless-stopped
+    ports:
+      - '5000:5000'
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      - PORT=5000
+      - NODE_ENV=production
+      - MONGO_URI=mongodb://mongodb:27017/team_collaboration
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - JWT_SECRET=collabhub_super_secret_jwt_key_2026_enterprise
+    volumes:
+      - backend_uploads:/app/uploads
+    networks:
+      - collabhub-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_API_URL=http://localhost:5000/api
+        - NEXT_PUBLIC_SOCKET_URL=http://localhost:5000
+    container_name: collabhub-frontend
+    restart: unless-stopped
+    ports:
+      - '3000:3000'
+    depends_on:
+      - backend
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - NEXT_PUBLIC_API_URL=http://localhost:5000/api
+      - NEXT_PUBLIC_SOCKET_URL=http://localhost:5000
+    networks:
+      - collabhub-network
+
+volumes:
+  mongo_data:
+    driver: local
+  redis_data:
+    driver: local
+  backend_uploads:
+    driver: local
+
+networks:
+  collabhub-network:
+    driver: bridge

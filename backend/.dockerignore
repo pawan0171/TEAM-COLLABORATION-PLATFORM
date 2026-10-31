@@ -1,0 +1,11 @@
+node_modules
+dist
+.env
+.git
+.gitignore
+*.log
+coverage
+src/tests
+jest.config.js
+uploads/*
+!uploads/.gitkeep
